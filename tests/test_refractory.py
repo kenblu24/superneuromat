@@ -20,7 +20,6 @@ class RefractoryTest(unittest.TestCase):
         self.snn.backend = self.use
         self.snn.sparse = self.sparse
 
-    @unittest.skip("Skipping refractory 1")
     def test_refractory_one(self):
         print("One neuron refractory period test")
 

@@ -7,7 +7,7 @@ import warnings
 import numpy as np
 from numpy import typing as npt
 from textwrap import dedent
-from scipy.sparse import csc_array  # scipy is also used for BLAS + numpy (dense matrix)
+from scipy.sparse import csc_array, lil_array  # scipy is also used for BLAS + numpy (dense matrix)
 from .util import getenv, getenvbool, is_intlike_catch, pretty_spike_train, int_err, float_err
 from .accessor_classes import Neuron, Synapse, NeuronList, SynapseList
 
@@ -1754,6 +1754,7 @@ class SNN:
     def simulate_cpu(self, time_steps: int = 1000, callback=None) -> None:
         self._last_used_backend = 'cpu'
 
+        zeros = lil_array if self._is_sparse else np.zeros
         delayed_synapses = self.synaptic_flags_sparse(B_PREDELAY) if self._is_sparse else self.synaptic_flags_mat(B_PREDELAY)
         delayed_synapses = delayed_synapses.astype(np.bool_)
         any_delayed = delayed_synapses.sum() > 0
@@ -1792,8 +1793,10 @@ class SNN:
             if any_delayed:
                 undelayed_weights = self._weights.copy()
                 undelayed_weights[delayed_synapses] = 0.0
-                delayed_weights = np.zeros(self._weights.shape, self._weights.dtype)
+                delayed_weights = zeros(self._weights.shape, dtype=self._weights.dtype)
                 delayed_weights[delayed_synapses] = self._weights[delayed_synapses]
+                if self._is_sparse:
+                    delayed_weights = csc_array(delayed_weights)
             else:
                 undelayed_weights = self._weights
             self._internal_states += self._input_spikes[tick] + (undelayed_weights.T @ self._spikes)
@@ -1807,18 +1810,18 @@ class SNN:
 
             if any_delayed:
                 delayed_spikes = delayed_weights.T * self._spikes
-                if np.any(delayed_spikes):
+                if self._is_sparse or delayed_spikes.any():
                     for delay in delays:
-                        mask = delayed_spikes == delay
-                        delay += tick
                         dest = delayed_spikes.copy()
-                        dest[~mask] = 0.
+                        if self._is_sparse:
+                            dest = csc_array(dest)
+                        dest[delayed_spikes != delay] = 0.
                         dest = dest.sum(1)
-                        if np.any(dest):
+                        if dest.any():
+                            delay += tick
                             if delay not in self.delayed_spikes:
                                 self.delayed_spikes[delay] = np.zeros(self.num_neurons, self.dd)
                             self.delayed_spikes[delay] += dest
-                print(tick, self.delayed_spikes)
 
             # Refractory period: Compute indices of neuron which are in their refractory period
             indices = np.greater(self._neuron_refractory_periods, 0)
