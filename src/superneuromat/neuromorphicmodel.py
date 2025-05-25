@@ -69,6 +69,11 @@ def check_gpu():
             raise ImportError(msg) from err
 
 
+SYN_FLAG = np.uint8
+B_STDP_ENABLED = SYN_FLAG(0b00000001)
+B_PREDELAY = SYN_FLAG(0b00000010)
+
+
 class SNN:
     """Defines a spiking neural network with neurons and synapses"""
 
@@ -1017,6 +1022,9 @@ class SNN:
             msg = f"{fname} argument stdp_enabled received {stdp_enabled!r}"
             msg += " which has ambiguous truthiness. Consider using an explicit boolean value instead."
             warnings.warn(msg, stacklevel=2)
+        stdp_enabled = bool(stdp_enabled)
+        synapse_flags = B_STDP_ENABLED if stdp_enabled else 0
+        # synapse_flags |= B_PREDELAY if delay > 1 else 0
 
         if delay <= 0:
             raise ValueError("delay must be greater than or equal to 1")
@@ -1037,7 +1045,7 @@ class SNN:
                 self.post_synaptic_neuron_ids[idx] = post_id
                 self.synaptic_weights[idx] = weight
                 self.synaptic_delays[idx] = delay
-                self.enable_stdp[idx] = stdp_enabled
+                self.enable_stdp[idx] = synapse_flags
             elif exist == "dontadd":
                 return self.synapses[idx]
             else:
@@ -1053,7 +1061,7 @@ class SNN:
             self.post_synaptic_neuron_ids.append(post_id)
             self.synaptic_weights.append(weight)
             self.synaptic_delays.append(delay)
-            self.enable_stdp.append(stdp_enabled)
+            self.enable_stdp.append(synapse_flags)
             self.connection_ids[(pre_id, post_id)] = idx
         else:
             for _d in range(int(delay) - 1):  # delay by stringing together hidden synapses
@@ -1333,19 +1341,35 @@ class SNN:
         -------
         np.ndarray[(num_neurons, num_neurons), dtype]
         """
-        dtype = self.dbin if dtype is None else dtype
-        mat = np.zeros((self.num_neurons, self.num_neurons), dtype)
+        # dtype = self.dbin if dtype is None else dtype
+        # TODO: remove references in docs for self.dbin pertaining to stdp
+        mat = np.zeros((self.num_neurons, self.num_neurons), SYN_FLAG)
+        mat[self.pre_synaptic_neuron_ids, self.post_synaptic_neuron_ids] = self.enable_stdp
+        mat &= B_STDP_ENABLED
+        return mat
+
+    def synaptic_flags_mat(self):
+        """Create a uint8 dense matrix which contains binary flags for each synapse
+
+        Returns
+        -------
+        np.ndarray[(num_neurons, num_neurons), dtype]
+        """
+        # dtype = self.dbin if dtype is None else dtype
+        mat = np.zeros((self.num_neurons, self.num_neurons), SYN_FLAG)
         mat[self.pre_synaptic_neuron_ids, self.post_synaptic_neuron_ids] = self.enable_stdp
         return mat
 
     def set_stdp_enabled_from_mat(self, mat: np.ndarray[(int, int), np.dtype[Any]] | np.ndarray | csc_array):
+        # TODO: UNTESTED
+        # TODO: NEED TO CAST DTYPE TO BOOL FIRST
         self.enable_stdp = list(mat[self.pre_synaptic_neuron_ids, self.post_synaptic_neuron_ids])
 
     def stdp_enabled_sparse(self, dtype=None):
-        dtype = self.dbin if dtype is None else dtype
+        # dtype = self.dbin if dtype is None else dtype
         return csc_array(
             (self.enable_stdp, (self.pre_synaptic_neuron_ids, self.post_synaptic_neuron_ids)),
-            shape=[self.num_neurons, self.num_neurons], dtype=dtype
+            shape=[self.num_neurons, self.num_neurons], dtype=SYN_FLAG
         )
 
     def _setup(self, dtype=None, sparse=None):
@@ -1755,7 +1779,7 @@ class SNN:
             self._neuron_refractory_periods[indices] -= 1
 
             # For spiking neurons, turn on refractory period
-            mask = self._spikes.astype(bool)
+            mask = self._spikes.astype(np.bool_)
             self._neuron_refractory_periods[mask] = self._neuron_refractory_periods_original[mask]
 
             # Reset internal states
