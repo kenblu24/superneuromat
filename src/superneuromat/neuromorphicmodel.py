@@ -72,6 +72,7 @@ def check_gpu():
 SYN_FLAG = np.uint8
 B_STDP_ENABLED = SYN_FLAG(0b00000001)
 B_PREDELAY = SYN_FLAG(0b00000010)
+B_ALL = SYN_FLAG(0b11111111)
 
 
 class SNN:
@@ -932,6 +933,7 @@ class SNN:
         delay: int = 1,
         stdp_enabled: bool | Any = False,
         exist: str = "error",
+        chained_neuron_delay: bool = False,
         **kwargs,
     ) -> Synapse:
         """Creates a synapse in the SNN
@@ -1024,7 +1026,7 @@ class SNN:
             warnings.warn(msg, stacklevel=2)
         stdp_enabled = bool(stdp_enabled)
         synapse_flags = B_STDP_ENABLED if stdp_enabled else 0
-        # synapse_flags |= B_PREDELAY if delay > 1 else 0
+        synapse_flags |= B_PREDELAY if delay > 1 else 0
 
         if delay <= 0:
             raise ValueError("delay must be greater than or equal to 1")
@@ -1056,14 +1058,14 @@ class SNN:
         idx = self.num_synapses  # this will become the new id of the synapse
 
         # Set new synapse parameters
-        if delay == 1:
+        if delay == 1 or not chained_neuron_delay:
             self.pre_synaptic_neuron_ids.append(pre_id)
             self.post_synaptic_neuron_ids.append(post_id)
             self.synaptic_weights.append(weight)
             self.synaptic_delays.append(delay)
             self.enable_stdp.append(synapse_flags)
             self.connection_ids[(pre_id, post_id)] = idx
-        else:
+        else:  # delay > 1 and chained_neuron_delay
             for _d in range(int(delay) - 1):  # delay by stringing together hidden synapses
                 temp_id = self.create_neuron()
                 self.create_synapse(pre_id, temp_id)
@@ -1327,7 +1329,7 @@ class SNN:
     def weight_sparsity(self):
         return self.num_synapses / (self.num_neurons ** 2)
 
-    def stdp_enabled_mat(self, dtype=None):
+    def stdp_enabled_mat(self):
         """Create a boolean dense matrix which indicates whether STDP is enabled on each synapse.
 
         This is used during :py:meth:`setup()`.
@@ -1343,12 +1345,21 @@ class SNN:
         """
         # dtype = self.dbin if dtype is None else dtype
         # TODO: remove references in docs for self.dbin pertaining to stdp
-        mat = np.zeros((self.num_neurons, self.num_neurons), SYN_FLAG)
-        mat[self.pre_synaptic_neuron_ids, self.post_synaptic_neuron_ids] = self.enable_stdp
-        mat &= B_STDP_ENABLED
+        return self.synaptic_flags_mat(mask=B_STDP_ENABLED)
+
+    def synaptic_delay_mat(self):
+        """Create a dense matrix which contains the synaptic delays for each synapse
+
+        Returns
+        -------
+        np.ndarray[(num_neurons, num_neurons), dtype]
+        """
+        # dtype = self.dbin if dtype is None else dtype
+        mat = np.zeros((self.num_neurons, self.num_neurons), self.dd)
+        mat[self.pre_synaptic_neuron_ids, self.post_synaptic_neuron_ids] = self.synaptic_delays
         return mat
 
-    def synaptic_flags_mat(self):
+    def synaptic_flags_mat(self, mask: int | SYN_FLAG = B_ALL):
         """Create a uint8 dense matrix which contains binary flags for each synapse
 
         Returns
@@ -1358,17 +1369,22 @@ class SNN:
         # dtype = self.dbin if dtype is None else dtype
         mat = np.zeros((self.num_neurons, self.num_neurons), SYN_FLAG)
         mat[self.pre_synaptic_neuron_ids, self.post_synaptic_neuron_ids] = self.enable_stdp
-        return mat
+        return mat & mask
 
     def set_stdp_enabled_from_mat(self, mat: np.ndarray[(int, int), np.dtype[Any]] | np.ndarray | csc_array):
         # TODO: UNTESTED
         # TODO: NEED TO CAST DTYPE TO BOOL FIRST
         self.enable_stdp = list(mat[self.pre_synaptic_neuron_ids, self.post_synaptic_neuron_ids])
 
-    def stdp_enabled_sparse(self, dtype=None):
+    def stdp_enabled_sparse(self):
         # dtype = self.dbin if dtype is None else dtype
+        self.synaptic_flags_sparse(B_STDP_ENABLED)
+
+    def synaptic_flags_sparse(self, mask: int | SYN_FLAG = B_ALL):
+        # dtype = self.dbin if dtype is None else dtype
+        flags = np.asarray(self.enable_stdp, dtype=SYN_FLAG)
         return csc_array(
-            (self.enable_stdp, (self.pre_synaptic_neuron_ids, self.post_synaptic_neuron_ids)),
+            (flags & B_ALL, (self.pre_synaptic_neuron_ids, self.post_synaptic_neuron_ids)),
             shape=[self.num_neurons, self.num_neurons], dtype=SYN_FLAG
         )
 
@@ -1738,6 +1754,13 @@ class SNN:
     def simulate_cpu(self, time_steps: int = 1000, callback=None) -> None:
         self._last_used_backend = 'cpu'
 
+        delayed_synapses = self.synaptic_flags_sparse(B_PREDELAY) if self._is_sparse else self.synaptic_flags_mat(B_PREDELAY)
+        delayed_synapses = delayed_synapses.astype(np.bool_)
+        any_delayed = delayed_synapses.sum() > 0
+        _synaptic_delays = self.synaptic_delay_mat()
+        delays = np.unique(_synaptic_delays.flatten()).astype(int).tolist()
+        self.delayed_spikes = {}
+
         if self._do_stdp:
             if not self._do_positive_update:
                 self._stdp_Apos = np.zeros(len(self._stdp_Aneg), self.dd)
@@ -1766,10 +1789,36 @@ class SNN:
             )
 
             # Internal state
-            self._internal_states += self._input_spikes[tick] + (self._weights.T @ self._spikes)
+            if any_delayed:
+                undelayed_weights = self._weights.copy()
+                undelayed_weights[delayed_synapses] = 0.0
+                delayed_weights = np.zeros(self._weights.shape, self._weights.dtype)
+                delayed_weights[delayed_synapses] = self._weights[delayed_synapses]
+            else:
+                undelayed_weights = self._weights
+            self._internal_states += self._input_spikes[tick] + (undelayed_weights.T @ self._spikes)
+
+            if tick in self.delayed_spikes:
+                self._internal_states += self.delayed_spikes[tick]
+                del self.delayed_spikes[tick]
 
             # Compute spikes
             self._spikes = np.greater(self._internal_states, self._neuron_thresholds).astype(self.dbin)
+
+            if any_delayed:
+                delayed_spikes = delayed_weights.T * self._spikes
+                if np.any(delayed_spikes):
+                    for delay in delays:
+                        mask = delayed_spikes == delay
+                        delay += tick
+                        dest = delayed_spikes.copy()
+                        dest[~mask] = 0.
+                        dest = dest.sum(1)
+                        if np.any(dest):
+                            if delay not in self.delayed_spikes:
+                                self.delayed_spikes[delay] = np.zeros(self.num_neurons, self.dd)
+                            self.delayed_spikes[delay] += dest
+                print(tick, self.delayed_spikes)
 
             # Refractory period: Compute indices of neuron which are in their refractory period
             indices = np.greater(self._neuron_refractory_periods, 0)

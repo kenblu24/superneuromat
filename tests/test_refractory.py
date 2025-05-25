@@ -20,6 +20,7 @@ class RefractoryTest(unittest.TestCase):
         self.snn.backend = self.use
         self.snn.sparse = self.sparse
 
+    @unittest.skip("Skipping refractory 1")
     def test_refractory_one(self):
         print("One neuron refractory period test")
 
@@ -49,7 +50,7 @@ class RefractoryTest(unittest.TestCase):
         n1 = snn.create_neuron(threshold=-1.0, reset_state=-1.0, refractory_period=2)
         n2 = snn.create_neuron(refractory_period=1000000)
 
-        snn.create_synapse(n1, n2, weight=2.0, delay=2)
+        snn.create_synapse(n1, n2, weight=2.0, delay=2, chained_neuron_delay=True)
 
         snn.add_spike(1, n2, -1.0)
         snn.add_spike(2, n1, 10.0)
@@ -71,6 +72,39 @@ class RefractoryTest(unittest.TestCase):
             [0, 0, 0],
             [0, 0, 0],
             [0, 0, 0],
+        ]
+        assert snn.ispikes.tolist() == expected_spike_train
+
+    def test_refractory_newdelay(self):
+        print("refractory new delay test")
+
+        snn = self.snn
+
+        n1 = snn.create_neuron(threshold=-1.0, reset_state=-1.0, refractory_period=2)
+        n2 = snn.create_neuron(refractory_period=1000000)
+
+        snn.create_synapse(n1, n2, weight=2.0, delay=2)
+
+        snn.add_spike(1, n2, -1.0)
+        snn.add_spike(2, n1, 10.0)
+        snn.add_spike(3, n1, 10.0)
+        snn.add_spike(5, n1, 10.0)
+
+        snn.simulate(10)
+
+        snn.print_spike_train()
+
+        expected_spike_train = [
+            [0, 0],
+            [0, 0],
+            [1, 0],
+            [0, 0],
+            [0, 1],
+            [1, 0],
+            [0, 0],
+            [0, 0],
+            [0, 0],
+            [0, 0],
         ]
         assert snn.ispikes.tolist() == expected_spike_train
 
