@@ -1379,7 +1379,7 @@ class SNN:
         # dtype = self.dbin if dtype is None else dtype
         flags = np.asarray(self.enable_stdp, dtype=SYN_FLAG)
         return csc_array(
-            (flags & B_ALL, (self.pre_synaptic_neuron_ids, self.post_synaptic_neuron_ids)),
+            (flags & mask, (self.pre_synaptic_neuron_ids, self.post_synaptic_neuron_ids)),
             shape=[self.num_neurons, self.num_neurons], dtype=SYN_FLAG
         )
 
