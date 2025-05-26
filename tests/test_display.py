@@ -23,6 +23,7 @@ class DisplayTest(unittest.TestCase):
     def test_display(self):
         snn = self.snn
 
+        snn.use_chained_delay = True
         print(snn)
 
         n0 = snn.create_neuron(threshold=-1.0, leak=2.0, refractory_period=3, reset_state=-2.0)
@@ -33,9 +34,9 @@ class DisplayTest(unittest.TestCase):
 
         snn.create_synapse(n0, n1)
         snn.create_synapse(n0, n2)
-        snn.create_synapse(n0, n3, weight=4.0, delay=3, stdp_enabled=True, chained_neuron_delay=True)
-        snn.create_synapse(n4, n2, weight=2.0, delay=2, stdp_enabled=False, chained_neuron_delay=True)
-        snn.create_synapse(n2, n1, weight=30.0, delay=4, stdp_enabled=True, chained_neuron_delay=True)
+        snn.create_synapse(n0, n3, weight=4.0, delay=3, stdp_enabled=True)
+        snn.create_synapse(n4, n2, weight=2.0, delay=2, stdp_enabled=False)
+        snn.create_synapse(n2, n1, weight=30.0, delay=4, stdp_enabled=True)
 
         snn.add_spike(0, n2, 4.0)
         snn.add_spike(1, n1, 3.0)

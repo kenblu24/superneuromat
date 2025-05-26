@@ -135,6 +135,7 @@ class SNN:
 
         self.allow_incorrect_stdp_sign = getenvbool('SNMAT_ALLOW_INCORRECT_STDP_SIGN', default=False)
         self.allow_signed_leak = getenvbool('SNMAT_ALLOW_SIGNED_LEAK', default=False)
+        self.use_chained_delay = getenvbool('SNMAT_CHAINED_DELAY', default=True, force_bool=True)
 
         self.memoized = {}
 
@@ -931,7 +932,7 @@ class SNN:
         delay: int = 1,
         stdp_enabled: bool | Any = False,
         exist: str = "error",
-        chained_neuron_delay: bool = False,
+        use_chained_delay: bool | None = None,
         **kwargs,
     ) -> Synapse:
         """Creates a synapse in the SNN
@@ -954,6 +955,10 @@ class SNN:
         exist : str, default='error'
             Action if synapse  already exists with the exact pre- and post-synaptic neurons.
             Should be one of ['error', 'overwrite', 'dontadd'].
+        use_chained_delay : bool | None, default=None
+            Whether delays should use chained delays. Has no effect for ``delay=1``.
+            If ``None``, will use the value of :py:attr:`SNN.use_chained_delay`, which defaults to ``True``.
+            The default can be set using the ``SNMAT_CHAINED_DELAY`` environment variable.
 
 
         If a delay is specified, a chain of neurons and synapses will automatically be added to the model
@@ -999,6 +1004,7 @@ class SNN:
 
         # TODO: make delay chaining an SNN option
         # TODO: ensure created hidden synapses are not flagged as newdelay
+        # TODO: make sparse stop raising warnings
 
         # Ensure we work with neuron ids
         if isinstance(pre_id, Neuron):
@@ -1050,6 +1056,9 @@ class SNN:
         if delay <= 0 and not last_in_chain:
             raise ValueError("delay must be greater than or equal to 1")
 
+        if use_chained_delay is None:
+            use_chained_delay = self.use_chained_delay
+
         if kwargs:
             msg = f"create_synapse() received unexpected keyword arguments: {list(kwargs.keys())}"
             raise TypeError(msg)
@@ -1080,21 +1089,21 @@ class SNN:
             return self.synapses[idx]  # prevent fall-through if user catches the error
 
         # Set new synapse parameters
-        if delay == 1 or last_in_chain or not chained_neuron_delay:
+        if delay == 1 or not use_chained_delay or last_in_chain:
             self.pre_synaptic_neuron_ids.append(pre_id)
             self.post_synaptic_neuron_ids.append(post_id)
             self.synaptic_weights.append(weight)
             self.synaptic_delays.append(delay)
             self.enable_stdp.append(synapse_flags)
             self.connection_ids[(pre_id, post_id)] = self.num_synapses - 1
-        else:  # delay > 1 and chained_neuron_delay
+        else:  # delay != 1 and use_chained_delay and not last_in_chain
             for _d in range(int(delay) - 1):  # delay by stringing together hidden synapses
                 temp_id = self.create_neuron()
                 self.create_synapse(pre_id, temp_id)
                 pre_id = temp_id
             # place weight on last hidden synapse
             self.create_synapse(pre_id, post_id, weight=weight, stdp_enabled=stdp_enabled,
-                                delay=-delay, _is_last_chained_synapse=True)  # , chained_neuron_delay=True)
+                                delay=-delay, _is_last_chained_synapse=True, use_chained_delay=False)
 
         # Return synapse ID
         return Synapse(self, self.num_synapses - 1)

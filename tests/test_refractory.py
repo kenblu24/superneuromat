@@ -49,7 +49,7 @@ class RefractoryTest(unittest.TestCase):
         n1 = snn.create_neuron(threshold=-1.0, reset_state=-1.0, refractory_period=2)
         n2 = snn.create_neuron(refractory_period=1000000)
 
-        snn.create_synapse(n1, n2, weight=2.0, delay=2, chained_neuron_delay=True)
+        snn.create_synapse(n1, n2, weight=2.0, delay=2, use_chained_delay=True)
 
         snn.add_spike(1, n2, -1.0)
         snn.add_spike(2, n1, 10.0)
@@ -78,6 +78,7 @@ class RefractoryTest(unittest.TestCase):
         print("refractory new delay test")
 
         snn = self.snn
+        snn.use_chained_delay = False
 
         n1 = snn.create_neuron(threshold=-1.0, reset_state=-1.0, refractory_period=2)
         n2 = snn.create_neuron(refractory_period=1000000)
@@ -121,9 +122,9 @@ class RefractoryTest(unittest.TestCase):
 
         snn.create_synapse(n0, n1)
         snn.create_synapse(n0, n2)
-        snn.create_synapse(n0, n3, weight=4.0, delay=3, stdp_enabled=True, chained_neuron_delay=chain)
-        snn.create_synapse(n4, n2, weight=2.0, delay=2, stdp_enabled=False, chained_neuron_delay=chain)
-        syn = snn.create_synapse(n2, n1, weight=30.0, delay=4, stdp_enabled=True, chained_neuron_delay=chain)
+        snn.create_synapse(n0, n3, weight=4.0, delay=3, stdp_enabled=True, use_chained_delay=chain)
+        snn.create_synapse(n4, n2, weight=2.0, delay=2, stdp_enabled=False, use_chained_delay=chain)
+        syn = snn.create_synapse(n2, n1, weight=30.0, delay=4, stdp_enabled=True, use_chained_delay=chain)
 
         snn.add_spike(0, n2, 4.0)
         snn.add_spike(1, n1, 3.0)
