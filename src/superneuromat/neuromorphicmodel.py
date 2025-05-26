@@ -99,6 +99,9 @@ class SNN:
         self.synaptic_delays = []
         self.enable_stdp = []
 
+        # Tracks delayed spikes in transport
+        self.delayed_spikes: dict[int, np.ndarray[(int,), np.dtype[np.float64]]] = {}
+
         # Input spikes (can have a value)
         self.input_spikes = {}
 
@@ -1050,8 +1053,6 @@ class SNN:
                 raise ValueError(msg)
             return self.synapses[idx]  # prevent fall-through if user catches the error
 
-        idx = self.num_synapses  # this will become the new id of the synapse
-
         # Set new synapse parameters
         if delay == 1 or not chained_neuron_delay:
             self.pre_synaptic_neuron_ids.append(pre_id)
@@ -1059,7 +1060,7 @@ class SNN:
             self.synaptic_weights.append(weight)
             self.synaptic_delays.append(delay)
             self.enable_stdp.append(synapse_flags)
-            self.connection_ids[(pre_id, post_id)] = idx
+            self.connection_ids[(pre_id, post_id)] = self.num_synapses - 1
         else:  # delay > 1 and chained_neuron_delay
             for _d in range(int(delay) - 1):  # delay by stringing together hidden synapses
                 temp_id = self.create_neuron()
@@ -1069,7 +1070,7 @@ class SNN:
             self.create_synapse(pre_id, post_id, weight=weight, stdp_enabled=stdp_enabled)
 
         # Return synapse ID
-        return Synapse(self, idx)
+        return Synapse(self, self.num_synapses - 1)
 
     def add_spike(
         self,
@@ -1474,6 +1475,9 @@ class SNN:
     def clear_input_spikes(self):
         self.input_spikes = {}
 
+    def clear_delayed_spikes(self):
+        self.delayed_spikes = {}
+
     def reset(self):
         """Reset the SNN's neuron states, refractory periods, spike train, and input spikes.
 
@@ -1485,6 +1489,7 @@ class SNN:
             snn.reset_refractory_periods()
             snn.clear_spike_train()
             snn.clear_input_spikes()
+            snn.clear_delayed_spikes()
 
         .. warning::
 
@@ -1502,6 +1507,8 @@ class SNN:
             self.clear_spike_train()
         if 'input_spikes' not in self.memoized:
             self.clear_input_spikes()
+        if 'delayed_spikes' not in self.memoized:
+            self.clear_delayed_spikes()
         self.restore()
 
     def restore(self, *args):
@@ -1559,6 +1566,11 @@ class SNN:
         """Consumes/deletes input spikes for the given number of time steps."""
         self.input_spikes = {t - time_steps: v for t, v in self.input_spikes.items()
                              if t >= time_steps}
+
+    def decrement_delayed_spikes(self, time_steps: int):
+        """Decrements the delay of all delayed spikes by the given number of time steps."""
+        self.delayed_spikes = {t - time_steps: v for t, v in self.delayed_spikes.items()
+                               if (t - time_steps) >= 0}
 
     def shorten_spike_train(self, time_steps: int | None = None):
         """Remove the oldest spikes from the spike train.
@@ -1753,9 +1765,12 @@ class SNN:
         delayed_synapses = self.synaptic_flags_sparse(B_PREDELAY) if self._is_sparse else self.synaptic_flags_mat(B_PREDELAY)
         delayed_synapses = delayed_synapses.astype(np.bool_)
         any_delayed = delayed_synapses.sum() > 0
-        _synaptic_delays = self.synaptic_delay_mat()
-        delays = np.unique(_synaptic_delays.flatten()).astype(int).tolist()
-        self.delayed_spikes = {}
+        _synaptic_delaysT = self.synaptic_delay_mat().T
+        delays = np.unique(_synaptic_delaysT.flatten()).astype(int).tolist()
+        try:
+            delays.remove(0)
+        except ValueError:
+            pass
 
         if self._do_stdp:
             if not self._do_positive_update:
@@ -1811,7 +1826,7 @@ class SNN:
                         dest = delayed_spikes.copy()
                         if self._is_sparse:
                             dest = csc_array(dest)
-                        dest[delayed_spikes != delay] = 0.
+                        dest[_synaptic_delaysT != delay] = 0.
                         dest = dest.sum(1)
                         if dest.any():
                             delay += tick
@@ -1856,6 +1871,7 @@ class SNN:
 
         if not self.manual_setup:
             self.devec()
+            self.decrement_delayed_spikes(time_steps)
             self.consume_input_spikes(time_steps)
 
     def simulate_gpu(self, time_steps: int = 1, callback=None) -> None:
@@ -2012,6 +2028,7 @@ class SNN:
         'post_synaptic_neuron_ids',
         'synaptic_weights',
         'synaptic_delays',
+        'delayed_spikes',
         'default_dtype',
         'enable_stdp',
         'spike_train',

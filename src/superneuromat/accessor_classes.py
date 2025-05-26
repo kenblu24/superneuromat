@@ -423,6 +423,9 @@ class Synapse:
     def stdp_enabled(self, value):
         self.m.enable_stdp[self.idx] ^= bool(value) * B_STDP_ENABLED
 
+    def flags(self):
+        return self.m.enable_stdp[self.idx]
+
     @property
     def weight(self) -> float:
         return self.m.synaptic_weights[self.idx]
