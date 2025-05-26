@@ -1,5 +1,6 @@
 from __future__ import annotations
 from .util import is_intlike
+from .consts import SYN_FLAG, B_ALL, B_PREDELAY, B_STDP_ENABLED
 
 from typing import TYPE_CHECKING
 import numpy as np
@@ -416,11 +417,11 @@ class Synapse:
     @property
     def stdp_enabled(self) -> bool:
         """If ``True``, STDP learning is enabled on this synapse."""
-        return self.m.enable_stdp[self.idx]
+        return self.m.enable_stdp[self.idx] & B_STDP_ENABLED
 
     @stdp_enabled.setter
     def stdp_enabled(self, value):
-        self.m.enable_stdp[self.idx] = bool(value)
+        self.m.enable_stdp[self.idx] ^= bool(value) * B_STDP_ENABLED
 
     @property
     def weight(self) -> float:

@@ -9,6 +9,7 @@ from numpy import typing as npt
 from textwrap import dedent
 from scipy.sparse import csc_array, lil_array  # scipy is also used for BLAS + numpy (dense matrix)
 from .util import getenv, getenvbool, is_intlike_catch, pretty_spike_train, int_err, float_err
+from .consts import SYN_FLAG, B_ALL, B_PREDELAY, B_STDP_ENABLED
 from .accessor_classes import Neuron, Synapse, NeuronList, SynapseList
 
 from typing import Any, TYPE_CHECKING
@@ -67,12 +68,6 @@ def check_gpu():
             from numba import cuda
         except ImportError as err:
             raise ImportError(msg) from err
-
-
-SYN_FLAG = np.uint8
-B_STDP_ENABLED = SYN_FLAG(0b00000001)
-B_PREDELAY = SYN_FLAG(0b00000010)
-B_ALL = SYN_FLAG(0b11111111)
 
 
 class SNN:
@@ -1378,7 +1373,7 @@ class SNN:
 
     def stdp_enabled_sparse(self):
         # dtype = self.dbin if dtype is None else dtype
-        self.synaptic_flags_sparse(B_STDP_ENABLED)
+        return self.synaptic_flags_sparse(B_STDP_ENABLED)
 
     def synaptic_flags_sparse(self, mask: int | SYN_FLAG = B_ALL):
         # dtype = self.dbin if dtype is None else dtype
@@ -1797,6 +1792,7 @@ class SNN:
                 delayed_weights[delayed_synapses] = self._weights[delayed_synapses]
                 if self._is_sparse:
                     delayed_weights = csc_array(delayed_weights)
+                    undelayed_weights.eliminate_zeros()
             else:
                 undelayed_weights = self._weights
             self._internal_states += self._input_spikes[tick] + (undelayed_weights.T @ self._spikes)
