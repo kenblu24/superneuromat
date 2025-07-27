@@ -3,23 +3,8 @@ from numba import jit
 
 
 @jit(nopython=True)
-def lif_jit(
-    tick: int,
-    input_spikes,
-    spikes,
-    states,
-    thresholds,
-    leaks,
-    reset_states,
-    refractory_periods,
-    refractory_periods_original,
-    weights,
-):
+def apply_leak_jit(states, reset_states, leaks):
     # CAUTION: This function has side-effects (not a pure function)
-    # spikes and states and refractory_periods are modified in-place
-    # ______     ______     __________________
-    # DO NOT ASSIGN THESE VARIABLES WITHIN THIS FUNCTION or things will break
-    # DO NOT states = something
 
     # Leak: internal state > reset state
     indices = states > reset_states
@@ -32,6 +17,32 @@ def lif_jit(
     states[indices] = np.minimum(
         states[indices] + leaks[indices], reset_states[indices]
     )
+
+
+@jit(nopython=True)
+def lif_jit(
+    tick: int,
+    input_spikes,
+    spikes,
+    states,
+    thresholds,
+    leaks,
+    reset_states,
+    refractory_periods,
+    refractory_periods_original,
+    weights,
+    delays: None,
+    delayed_synapses: None,
+    synaptic_delaysT: None,
+    delayed_spikes: None,
+):
+    # CAUTION: This function has side-effects (not a pure function)
+    # spikes and states and refractory_periods are modified in-place
+    # ______     ______     __________________
+    # DO NOT ASSIGN THESE VARIABLES WITHIN THIS FUNCTION or things will break
+    # DO NOT states = something
+
+    apply_leak_jit(states, reset_states, leaks)
 
     # Internal state (in-place)
     states += input_spikes[tick] + (weights.T @ spikes)
@@ -53,10 +64,69 @@ def lif_jit(
     # Reset internal states (in-place)
     states[mask] = reset_states[mask]
 
-    # spikes[:] = spikes
+    # states, spikes, refractory_periods were modified in-place
+    # everything else is local
+
+
+@jit(nopython=True)
+def lif_jit_undelayed(
+    tick: int,
+    input_spikes,
+    spikes,
+    states,
+    thresholds,
+    leaks,
+    reset_states,
+    refractory_periods,
+    refractory_periods_original,
+    weights,
+    undelayed_weightsT,  # empty buffer that we fill
+    delayed_synapses,
+    delayed_spikes,
+):
+    # CAUTION: This function has side-effects (not a pure function)
+
+    apply_leak_jit(states, reset_states, leaks)
+
+    weightsT = weights.T
+    synapse_mask = ~delayed_synapses.T
+    undelayed_weightsT = weightsT[synapse_mask]
+
+    # add to internal state of neurons which are not delayed
+    states += input_spikes[tick] + (undelayed_weightsT @ spikes)
+
+    undelayed_weightsT[synapse_mask] = 0.0
+
+    states += delayed_spikes
+
+    np.greater(states, thresholds, spikes)
+
+    indices = refractory_periods > 0
+
+    spikes[indices] = 0
+    refractory_periods[indices] -= 1
+
+    mask = spikes.astype(np.bool_)
+    refractory_periods[mask] = refractory_periods_original[mask]
+
+    states[mask] = reset_states[mask]
 
     # states, spikes, refractory_periods were modified in-place
     # everything else is local
+
+
+@jit(nopython=True)
+def lif_jit_delayed(
+    delay: int,
+    spikes,
+    states,
+    weights,
+    delayed_weightsT,  # empty buffer that we fill
+    delayed_synapses: dict,
+    synaptic_delaysT,
+):
+    # TODO: setup translation of delayed_synapses to a numba typed dict
+    pass
 
 
 @jit(nopython=True)

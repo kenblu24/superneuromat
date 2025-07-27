@@ -21,7 +21,7 @@ from typing import Any, TYPE_CHECKING
 try:
     import numba
     from numba import cuda
-    from .numba_jit import lif_jit, stdp_update_jit
+    from .numba_jit import lif_jit, stdp_update_jit, lif_jit_delayed, lif_jit_undelayed
     from .numba_jit import stdp_update_jit_apos, stdp_update_jit_aneg
 except ImportError:
     numba = None
@@ -1467,6 +1467,24 @@ class SNN:
 
         # Create numpy arrays for synapse state variables
         self._weights = self.weights_sparse() if self._is_sparse else self.weight_mat()
+
+        # delays
+        self._delayed_synapses = (self.synaptic_flags_sparse(B_PREDELAY) if self._is_sparse
+                                  else self.synaptic_flags_mat(B_PREDELAY))
+        self._delayed_synapses = self._delayed_synapses.astype(np.bool_)
+        self._any_delayed = self._delayed_synapses.sum() > 0
+        if self._any_delayed:
+            self._synaptic_delaysT = self.synaptic_delay_mat().T
+            self._delays = np.unique(self._synaptic_delaysT.flatten()).astype(int).tolist()
+            try:
+                self._delays.remove(0)
+            except ValueError:
+                pass
+        else:
+            self._delays = None
+            self._synaptic_delaysT = None
+
+        # stdp
         anystdp = self.stdp and any(self.enable_stdp)
         self._do_positive_update = anystdp and self.stdp_positive_update and any(self.apos)
         self._do_negative_update = anystdp and self.stdp_negative_update and any(self.aneg)
@@ -1840,6 +1858,11 @@ class SNN:
         check_numba()
         if self._is_sparse:
             raise ValueError("Sparse simulations are only supported on the CPU.")
+        any_delayed = self._any_delayed
+        lif_func = lif_jit_undelayed if any_delayed else lif_jit
+        if any_delayed:
+            undelayed_weights_buf = np.zeros(self._weights.shape, dtype=self._weights.dtype)
+            delayed_weights_buf = undelayed_weights_buf.copy()
 
         self._spikes = self._spikes.astype(self.dd)
 
@@ -1848,7 +1871,7 @@ class SNN:
                 if callable(callback):
                     callback(self, tick, time_steps)
 
-            lif_jit(
+            lif_func(
                 tick,
                 self._input_spikes,
                 self._spikes,
@@ -1859,6 +1882,11 @@ class SNN:
                 self._neuron_refractory_periods,
                 self._neuron_refractory_periods_original,
                 self._weights,
+                # next 4 are None if not any_delayed (this is set in _setup())
+                self._delays,
+                self._delayed_synapses.T,
+                self._synaptic_delaysT,
+                self.delayed_spikes,
             )
 
             self.spike_train.append(self._spikes.astype(self.dbin))  # COPY
@@ -1888,15 +1916,7 @@ class SNN:
         self._last_used_backend = 'cpu'
 
         zeros = lil_array if self._is_sparse else np.zeros
-        delayed_synapses = self.synaptic_flags_sparse(B_PREDELAY) if self._is_sparse else self.synaptic_flags_mat(B_PREDELAY)
-        delayed_synapses = delayed_synapses.astype(np.bool_)
-        any_delayed = delayed_synapses.sum() > 0
-        _synaptic_delaysT = self.synaptic_delay_mat().T
-        delays = np.unique(_synaptic_delaysT.flatten()).astype(int).tolist()
-        try:
-            delays.remove(0)
-        except ValueError:
-            pass
+        any_delayed = self._any_delayed
 
         if self._do_stdp:
             if not self._do_positive_update:
@@ -1928,9 +1948,9 @@ class SNN:
             # Internal state
             if any_delayed:
                 undelayed_weights = self._weights.copy()
-                undelayed_weights[delayed_synapses] = 0.0
+                undelayed_weights[self._delayed_synapses] = 0.0
                 delayed_weights = zeros(self._weights.shape, dtype=self._weights.dtype)
-                delayed_weights[delayed_synapses] = self._weights[delayed_synapses]
+                delayed_weights[self._delayed_synapses] = self._weights[self._delayed_synapses]
                 if self._is_sparse:
                     delayed_weights = csc_array(delayed_weights)
                     undelayed_weights.eliminate_zeros()
@@ -1945,27 +1965,28 @@ class SNN:
             # Compute spikes
             self._spikes = np.greater(self._internal_states, self._neuron_thresholds).astype(self.dbin)
 
-            if any_delayed:
-                delayed_spikes = delayed_weights.T * self._spikes
-                if self._is_sparse or delayed_spikes.any():
-                    for delay in delays:
-                        dest = delayed_spikes.copy()
-                        if self._is_sparse:
-                            dest = csc_array(dest)
-                        dest[_synaptic_delaysT != delay] = 0.
-                        dest = dest.sum(1)
-                        if dest.any():
-                            delay += tick
-                            if delay not in self.delayed_spikes:
-                                self.delayed_spikes[delay] = np.zeros(self.num_neurons, self.dd)
-                            self.delayed_spikes[delay] += dest
-
             # Refractory period: Compute indices of neuron which are in their refractory period
             indices = np.greater(self._neuron_refractory_periods, 0)
 
             # For neurons in their refractory period, zero out their spikes and decrement refractory period by one
             self._spikes[indices] = 0
             self._neuron_refractory_periods[indices] -= 1
+
+            if any_delayed:
+                delayed_spikes = delayed_weights.T * self._spikes
+                if self._is_sparse or delayed_spikes.any():
+                    for delay in self._delays:
+                        dest = delayed_spikes.copy()
+                        if self._is_sparse:
+                            dest = csc_array(dest)
+                        dest[self._synaptic_delaysT != delay] = 0.
+                        dest = dest.sum(1)
+                        if dest.any():
+                            delay += tick
+                            if delay not in self.delayed_spikes:
+                                self.delayed_spikes[delay] = dest
+                            else:
+                                self.delayed_spikes[delay] += dest
 
             # For spiking neurons, turn on refractory period
             mask = self._spikes.astype(np.bool_)
