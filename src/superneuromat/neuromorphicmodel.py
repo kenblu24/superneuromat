@@ -90,7 +90,7 @@ class SNN:
 
     gpu_threshold = 100.0
     jit_threshold = 50.0
-    sparsity_threshold = 0.1
+    sparsity_threshold = 0.2
     disable_performance_warnings = True
 
     def __init__(self):
@@ -1376,7 +1376,7 @@ class SNN:
         )
 
     def weight_sparsity(self):
-        return self.num_synapses / (self.num_neurons ** 2)
+        return self.num_synapses / (self.num_neurons ** 2) if self.num_neurons else float('nan')
 
     def stdp_enabled_mat(self, dtype=None):
         """Create a boolean dense matrix which indicates whether STDP is enabled on each synapse.
@@ -1976,7 +1976,8 @@ class SNN:
         return 'cpu'
 
     def recommend_sparsity(self):
-        return self.weight_sparsity() < self.sparsity_threshold and self.num_neurons > 100
+        return self.num_neurons > 2 and self.weight_sparsity() < self.sparsity_threshold
+        # returns false for empty SNN
 
     def simulate(self, time_steps: int = 1, callback=None, use=None, sparse=None, **kwargs) -> None:
         """Simulate the neuromorphic spiking neural network
@@ -1991,13 +1992,17 @@ class SNN:
             Which backend to use. Can be 'auto', 'cpu', 'jit', or 'gpu'.
             If None, SNN.backend will be used, which is 'auto' by default.
             'auto' will choose a backend based on the network size and time steps.
+        sparse : bool | str | Any, default=None
+            Whether to use a sparse representation for the SNN.
+            See :py:attr:`sparse` for more information.
 
         Raises
         ------
         TypeError
             If ``time_steps`` is not an int.
         ValueError
-            If ``time_steps`` is less than or equal to zero.
+            If ``time_steps`` is less than or equal to zero, or
+            if``use`` is not one of 'auto', 'cpu', 'jit', or 'gpu'.
         """
 
         # Type errors
@@ -2021,27 +2026,33 @@ class SNN:
         explicitly_sparse = (sparse is True
                              or self.sparse is True and sparse is not False)
 
+        # in auto setup mode, we need to choose sparsity before setting up.
         if not self.manual_setup:
             if use == 'auto':
-                use = self.recommend(time_steps)
-                if explicitly_sparse:
-                    use = 'cpu'
+                use = 'cpu' if explicitly_sparse else self.recommend(time_steps)
             elif (explicitly_sparse and use != 'cpu'):
                 msg = "simulate() received explicit request to use sparsity with a "
                 msg += "non-cpu backend. Sparsity is not supported on 'jit' or 'gpu' yet."
                 raise ValueError(msg)
-            if use == 'gpu':
+            if use == 'gpu':  # if user asked for gpu, we need to disable sparsity for setup
                 sparse = False
 
             self._setup(sparse=sparse)
             self.setup_input_spikes(time_steps)
         elif sparse is not None:
-            msg = "simulate() received sparsity argument in manual_setup mode."
-            msg += " Pass sparse to setup() instead."
+            msg = ("simulate() received sparsity argument in manual_setup mode, but"
+            " dense/sparse representation should be chosen at setup() time. Pass sparse to setup() instead.")
             raise ValueError(msg)
+        # If in manual_setup mode, sparse was chosen at setup() time.
+        # Either way, we no longer need to worry about setting sparsity.
 
         if not use:
             use = 'cpu'
+        elif isinstance(use, str) and use.lower() == 'auto':
+            # take care of auto-choosing backend in manual_setup mode
+            # If the user explicitly asked for sparsity, we need to choose cpu.
+            # Otherwise, we have freedom to choose any backend.
+            use = 'cpu' if explicitly_sparse else self.recommend(time_steps)
 
         if use == 'jit':
             self.simulate_cpu_jit(time_steps, callback, **kwargs)
