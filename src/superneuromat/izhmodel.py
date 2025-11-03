@@ -20,7 +20,7 @@ class IZHModel(SNN):
         self.k = []  # defines shape of nullcline/iv curve
         # self.u = self.neuron_refractory_periods_state
         self.vrest = []
-        # self.vpeak = []
+        self.vpeak = []
         self.bias = []
         self.dt = 0.1
 
@@ -31,11 +31,12 @@ class IZHModel(SNN):
         reset_state: float = 0.0,
         refractory_period: int = 0,
         refractory_state: int = 0,
-        initial_state: float | None = 0.0,
+        initial_state: float | None = -60.0,
         C: float = 1.0,
         b: float = 0.0,
         k: float = 1.0,
-        vrest: float = 0.0,
+        vrest: float = -60.0,
+        vpeak: float = 30.0,
         bias: float = 0.0,
     ) -> Neuron:
         """
@@ -110,6 +111,7 @@ class IZHModel(SNN):
         self.b.append(b)
         self.k.append(k)
         self.vrest.append(vrest)
+        self.vpeak.append(vpeak)
         self.bias.append(bias)
 
         # Return neuron ID
@@ -125,7 +127,7 @@ class IZHModel(SNN):
         # self._d = np.asarray(self.d, self.dd)
         self._k = np.asarray(self.k, self.dd)
         # self._u = np.asarray(self.u, self.dd)
-        # self._vpeak = np.asarray(self.vpeak, self.dd)
+        self._vpeak = np.asarray(self.vpeak, self.dd)
         self._vrest = np.asarray(self.vrest, self.dd)
         self._I = np.asarray(self.bias, self.dd)
 
@@ -149,6 +151,7 @@ class IZHModel(SNN):
         k = self._k
         vrest = self._vrest
         vthr = self._neuron_thresholds
+        vpeak = self._vpeak
         Ibias = self._I
 
         # Simulate
@@ -166,7 +169,7 @@ class IZHModel(SNN):
             u += self.dt * (a * (b * (v - vrest) - u))
 
             # Compute spikes
-            self._spikes = np.greater(v, vthr).astype(self.dbin)
+            self._spikes = np.greater(v, vpeak).astype(self.dbin)
 
             u += d * self._spikes
 

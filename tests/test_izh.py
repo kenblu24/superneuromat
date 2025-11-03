@@ -1,6 +1,7 @@
 import unittest
 
 import numpy as np
+import matplotlib.pyplot as plt
 
 import sys
 sys.path.insert(0, "../src/")
@@ -61,7 +62,7 @@ class LogicGatesTest(unittest.TestCase):
 
         # Setup and simulate
         v_hist = []
-        for i in range(2000):
+        for i in range(5000):
             v_hist.append(a.state)
             snn.simulate()
 
@@ -69,6 +70,9 @@ class LogicGatesTest(unittest.TestCase):
         snn.print_spike_train()
         print(snn)
         print(v_hist)
+        fig, ax = plt.subplots()
+        ax.plot(v_hist)
+        plt.show()
 
         # expected_spike_train = [
         #     [0, 0, 0],  # in:  0┬0
