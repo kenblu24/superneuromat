@@ -1,9 +1,16 @@
+import warnings
+
 import numpy as np
 from scipy.sparse import csc_array
 
 from .neuromorphicmodel import SNN
 from .accessor_classes import Neuron
-from .util import float_err, int_err
+from .util import float_err, int_err, is_intlike_catch
+
+
+# typing
+from .accessor_classes import Synapse
+from typing import Any
 
 
 class IZHModel(SNN):
@@ -23,6 +30,9 @@ class IZHModel(SNN):
         self.vpeak = []
         self.bias = []
         self.dt = 0.1
+
+        self.isyn = []  # single exponential decay synapse
+        self.isyn_alpha = []  # double exponential decay synapse
 
     def create_neuron(
         self,
@@ -116,6 +126,178 @@ class IZHModel(SNN):
 
         # Return neuron ID
         return Neuron(self, self.num_neurons - 1)
+
+    def create_synapse(
+        self,
+        pre_id: int | Neuron,
+        post_id: int | Neuron,
+        weight: float = 1.0,
+        delay: int = 1,
+        stdp_enabled: bool | Any = False,
+        exist: str = "error",
+        **kwargs,
+    ) -> Synapse:
+        """Creates a synapse in the SNN
+
+        Creates synapse connecting a pre-synaptic neuron to a post-synaptic neuron
+        with a given set of synaptic parameters (weight, delay and stdp_enabled)
+
+        Parameters
+        ----------
+        pre_id : int | Neuron
+            ID of the pre-synaptic neuron (spike sender).
+        post_id : int | Neuron
+            ID of the post-synaptic neuron (spike destination).
+        weight : float, default=1.0
+            Synaptic weight; weight is multiplied to the incoming spike.
+        delay : int, default=1
+            Synaptic delay; number of time steps by which the outgoing signal of the synapse is delayed by.
+        stdp_enabled : bool | Any, default=False
+            If True, stdp will be enabled on the synapse, allowing the weight of this synapse to be updated.
+        exist : str, default='error'
+            Action if synapse  already exists with the exact pre- and post-synaptic neurons.
+            Should be one of ['error', 'overwrite', 'dontadd'].
+
+
+        If a delay is specified, a chain of neurons and synapses will automatically be added to the model
+        to represent the delay, and this function will return the last synapse of the chain.
+        The other neurons and synapses in the chain can be accessed via the :py:attr:`delay_chain` and
+        :py:attr:`delay_chain_synapses` properties of the synapse, respectively.
+
+        While only positive delay values are supported due to temporal consistency and causality requirements,
+        The delay will be stored as ``delay * -1`` in the model to represent that it is a chained delay.
+        This does not affect the effective delay value, as the delay will still be applied via the delay chain.
+
+        Note that delays of delay chains cannot be modified after creation.
+
+        Raises
+        ------
+        TypeError
+
+            * ``pre_id`` or ``post_id`` is not neuron or neuron ID (``int``).
+            * ``weight`` is not a ``float``.
+            * ``delay`` cannot be cast to ``int``.
+            * ``exist`` is not a ``str``.
+
+        ValueError
+
+            * ``pre_id`` or ``post_id`` is not a valid neuron or neuron ID.
+            * ``delay`` is less than or equal to ``0``
+            * ``exist`` is not one of ``'error', 'overwrite', 'dontadd'``.
+            * Synapse with the given pre- and post-synaptic neurons already exists, ``exist='overwrite'``, and ``delay != 1``.
+
+        RuntimeError
+
+            * Synapse with the given pre- and post-synaptic neurons already exists and ``exist='error'``.
+
+        Returns
+        -------
+        Synapse
+
+
+        .. seealso::
+
+           :py:meth:`Neuron.connect_child`, :py:meth:`Neuron.connect_parent`
+        """
+
+        # TODO: make delay chaining an SNN option
+        # TODO: ensure created hidden synapses are not flagged as newdelay
+
+        # Ensure we work with neuron ids
+        if isinstance(pre_id, Neuron):
+            pre_id = pre_id.idx
+        if isinstance(post_id, Neuron):
+            post_id = post_id.idx
+
+        # input validation
+        fname = 'create_synapse()'
+
+        if not is_intlike_catch(pre_id):
+            raise TypeError("pre_id must be int or Neuron.")
+        pre_id = int(pre_id)
+
+        if not is_intlike_catch(post_id):
+            raise TypeError("post_id must be int or Neuron.")
+        post_id = int(post_id)
+
+        weight = float_err(weight, 'weight', fname)
+        delay = int_err(delay, 'delay', fname)
+
+        if pre_id < 0:
+            raise ValueError("pre_id must be greater than or equal to zero")
+        elif not pre_id < self.num_neurons:
+            msg = f"Added synapse to non-existent pre-synaptic Neuron {pre_id}."
+            raise warnings.warn(msg, stacklevel=2)
+
+        if post_id < 0:
+            raise ValueError("post_id must be greater than or equal to zero")
+        if not post_id < self.num_neurons:
+            msg = f"Added synapse to non-existent post-synaptic Neuron {post_id}."
+            raise warnings.warn(msg, stacklevel=2)
+
+        if (enable_stdp := kwargs.pop('enable_stdp', None)) is not None:
+            warnings.warn("create_synapse kwarg 'enable_stdp' is deprecated. Use 'stdp_enabled' instead.",
+                          DeprecationWarning, stacklevel=2)
+            stdp_enabled = enable_stdp
+
+        ambiguous = ('true', '1', 'y', 'yes', 'on', 'f', 'false', '0', 'n', 'no', 'off')
+        if isinstance(stdp_enabled, str) and stdp_enabled.lower() in ambiguous:
+            msg = f"{fname} argument stdp_enabled received {stdp_enabled!r}"
+            msg += " which has ambiguous truthiness. Consider using an explicit boolean value instead."
+            warnings.warn(msg, stacklevel=2)
+
+        last_in_chain = kwargs.pop('_is_last_chained_synapse', False)
+        if delay <= 0 and not last_in_chain:
+            raise ValueError("delay must be greater than or equal to 1")
+
+        if kwargs:
+            msg = f"create_synapse() received unexpected keyword arguments: {list(kwargs.keys())}"
+            raise TypeError(msg)
+
+        if (idx := self.get_synapse_id(pre_id, post_id)) is not None:  # if synapse already exists
+            if not isinstance(exist, str):
+                raise TypeError("exist must be a string")
+            exist = exist.lower()
+            if exist == "error":
+                msg = f"Synapse already exists: {self.synapses[idx]!s}"
+                msg += "If this was intentional, choose arg exist=<'dontadd', 'overwrite'>."
+                raise RuntimeError(msg)
+            elif exist == "overwrite":
+                # check if delay has changed
+                if delay != self.synaptic_delays[idx]:
+                    raise ValueError("create_synapse() tried to overwrite chained synapse with different delay.")
+                # overwrite old synapse params
+                self.pre_synaptic_neuron_ids[idx] = pre_id
+                self.post_synaptic_neuron_ids[idx] = post_id
+                self.synaptic_weights[idx] = weight
+                self.synaptic_delays[idx] = delay
+                self.enable_stdp[idx] = stdp_enabled
+            elif exist == "dontadd":
+                return self.synapses[idx]
+            else:
+                msg = f"Invalid value for exist: {exist}. Expected 'error', 'overwrite', or 'dontadd'."
+                raise ValueError(msg)
+            return self.synapses[idx]  # prevent fall-through if user catches the error
+
+        # Set new synapse parameters
+        if delay == 1 or last_in_chain:
+            self.pre_synaptic_neuron_ids.append(pre_id)
+            self.post_synaptic_neuron_ids.append(post_id)
+            self.synaptic_weights.append(weight)
+            self.synaptic_delays.append(delay)
+            self.enable_stdp.append(stdp_enabled)
+            self.connection_ids[(pre_id, post_id)] = self.num_synapses - 1
+        else:
+            for _d in range(int(delay) - 1):  # delay by stringing together hidden synapses
+                temp_id = self.create_neuron()
+                self.create_synapse(pre_id, temp_id)
+                pre_id = temp_id
+            # place weight on last hidden synapse
+            self.create_synapse(pre_id, post_id, weight=weight, stdp_enabled=stdp_enabled,
+                                delay=-delay, _is_last_chained_synapse=True)  # , chained_neuron_delay=True)
+
+        # Return synapse ID
+        return Synapse(self, self.num_synapses - 1)
 
     def _setup(self, dtype=None, sparse=None):
         """Setup the SNN for simulation. Not intended to be called by end user."""
