@@ -1,5 +1,6 @@
 from __future__ import annotations
 import sys
+from .consts import SYN_FLAG, B_ALL, B_PREDELAY, B_STDP_ENABLED
 from collections.abc import Sequence, MutableSequence
 from .util import is_intlike, int_err, float_err, accessor_slice, slice_indices
 from . import util
@@ -1759,11 +1760,14 @@ class Synapse(ModelAccessor):
     @property
     def stdp_enabled(self) -> bool:
         """If ``True``, STDP learning is enabled on this synapse."""
-        return self.m.enable_stdp[self.idx]
+        return self.m.enable_stdp[self.idx] & B_STDP_ENABLED
 
     @stdp_enabled.setter
     def stdp_enabled(self, value):
-        self.m.enable_stdp[self.idx] = bool(value)
+        self.m.enable_stdp[self.idx] ^= bool(value) * B_STDP_ENABLED
+
+    def flags(self):
+        return self.m.enable_stdp[self.idx]
 
     @property
     def weight(self) -> float:

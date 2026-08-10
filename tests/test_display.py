@@ -24,6 +24,7 @@ class DisplayTest(unittest.TestCase):
     def test_display(self):
         snn = self.snn
 
+        snn.use_chained_delay = True
         print(snn)
 
         n0 = snn.create_neuron(threshold=-1.0, leak=2.0, refractory_period=3, reset_state=-2.0)
