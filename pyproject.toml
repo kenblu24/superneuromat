@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "superneuromat"
-version = "3.3.0"
+version = "3.5.0"
 requires-python = ">=3.9"
 dependencies = [
     "numpy>=1.24.0",
@@ -94,6 +94,7 @@ commands = [
     ["python", "test_display.py",],
     ["python", "test_reset.py",],
     ["python", "test_dtype.py",],
+    ["python", "test_deletion.py",],
     ["python", "test_json.py",],
 ]
 
@@ -136,7 +137,7 @@ commands = [
 description = "Run tests for pandas"
 base_python = ["python3.13"]
 change_dir = "tests"
-deps = ["pandas"]
+deps = ["pandas", "networkx"]
 commands = [
 
     ["python", "test_display.py",],

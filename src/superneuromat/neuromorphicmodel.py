@@ -147,6 +147,7 @@ class SNN:
         self._sparse = 'auto'  # default sparsity setting.
         # self._return_sparse = False  # whether to return spikes sparsely
         self._is_sparse = False  # whether internal SNN representation is currently sparse
+        #: Whether :py:meth:`setup()` and :py:meth:`devec()` need to be called manually. See :doc:`/guide/speed`
         self.manual_setup = False
 
         self.allow_incorrect_stdp_sign = getenvbool('SNMAT_ALLOW_INCORRECT_STDP_SIGN', default=False)
@@ -163,19 +164,18 @@ class SNN:
             Returns 'cpu' | 'jit' | 'gpu' for the backend that was used during
             :py:meth:`simulate`, or ``None`` if no simulation has been run yet.
 
-
-        .. seealso::
-
-            :py:meth:`backend`
-
-            :py:meth:`is_sparse`
-
+        See Also
+        --------
+        backend
+        is_sparse
         """
         return self._last_used_backend
 
     @property
     def backend(self):
         """Set the backend to be used for simulation.
+
+        See :py:meth:`setup` and :doc:`/guide/speed` for guidance on choosing a backend and sparsity setting manually.
 
         Parameters
         ----------
@@ -191,6 +191,12 @@ class SNN:
         ``'auto'`` is the default value. This will choose a backend at :py:meth:`simulate()` time
         based on the network size and time steps, as chosen by :py:meth:`recommend()`.
 
+        See Also
+        --------
+        recommend
+        recommend_sparsity
+        sparse
+        setup
         """
         return self._backend
 
@@ -222,6 +228,8 @@ class SNN:
 
         When creating an :py:class:`SNN`\\ , the ``sparse`` parameter is ``'auto'`` by default.
 
+        See :py:meth:`setup` for guidance on choosing a backend and sparsity setting manually.
+
         Parameters
         ----------
         sparse : bool | str | Any
@@ -238,6 +246,12 @@ class SNN:
         bool | str
             Returns ``True``, ``False``, or ``'auto'``.
 
+        See Also
+        --------
+        :doc:`/guide/speed`
+        recommend_sparsity
+        backend
+        setup
         """
         return self._sparse
 
@@ -529,6 +543,122 @@ class SNN:
             for neuron, value in zip(spikes["nids"], spikes["values"]):
                 df.loc[time, neuron] = value
         return df.fillna(0.0)
+
+    if TYPE_CHECKING:
+        import networkx as nx
+
+        def from_networkx(self, graph: nx.DiGraph): ...
+
+    @classmethod
+    def from_networkx(cls, graph, snn=None):
+        """Load an SNN from a networkx Graph object.
+
+        Parameters
+        ----------
+        graph : networkx.DiGraph
+            The networkx graph to load.
+        snn : SNN | None, default=None
+            If None, a new SNN is created.
+            If an existing SNN is passed, it must contain no neurons.
+
+        Returns
+        -------
+        SNN
+        """
+        # sort nodes by idx
+        snn = cls() if snn is None else snn
+        nodes = sorted(graph.nodes.items(), key=lambda x: x[0])
+        # translate neuron attributes
+        nap = {k: k for k in Neuron.attribute_names}
+        nap['state'] = 'initial_state'  # Neuron.state corresponds to create_neuron(initial_state)
+        for nx_id, nx_neuron in nodes:
+            attributes = {nap[k]: nx_neuron.get(k) for k in Neuron.attribute_names if k in nx_neuron}
+            snn.create_neuron(**attributes)
+            assert nx_id == snn.num_neurons - 1
+        # sort edges by idx if present
+        if graph.edges and 'idx' in next(iter(graph.edges.values())):
+            edges = sorted(graph.edges.items(), key=lambda x: x[1]['idx'])
+        else:
+            edges = graph.edges.items()
+        for (a, b), attrs in edges:
+            delay = attrs.pop('delay', None)
+            attrs.pop('idx', None)
+            syn = snn.create_synapse(a, b, **attrs)
+            if delay is not None:
+                snn.synaptic_delays[syn.idx] = delay
+        return snn
+
+    def to_networkx(self, include_attributes=True, include_synapse_order=False):
+        """Convert the SNN to a :py:class:`networkx.DiGraph` with neurons represented by int ids.
+
+        The returned graph can be saved to a file using functions such as :py:meth:`networkx.write_graphml`.
+
+        Parameters
+        ----------
+        include_attributes : bool, default=True
+            If True, include the attributes of the neurons and synapses in the graph.
+            The included attributes are generated in :py:attr:`Neuron.attributes_dict`
+            and :py:attr:`Synapse.attributes_dict`.
+            If False, only the graph structure is included.
+        include_synapse_order : bool, default=False
+            If True, include the synapse order in the graph on the ``'idx'`` attribute.
+            If ``include_attributes`` is False, this parameter is ignored.
+
+        Returns
+        -------
+        networkx.DiGraph
+            The :py:class:`networkx.DiGraph` representation of the SNN.
+
+        See Also
+        --------
+        to_networkx_accessors : Create a NetworkX graph with Neuron objects as nodes.
+
+        Notes
+        -----
+        By default, the graph will not contain spike information.
+
+        Examples
+        --------
+        >>> import networkx as nx
+        >>> snn = superneuromat.SNN()
+        >>> G = snn.to_networkx()
+        >>> nx.write_graphml(G, "snn.graphml")
+        """
+        import networkx as nx
+
+        def get_attributes_dict(s):
+            attribute_names = s.attribute_names
+            if include_synapse_order and 'idx' not in attribute_names:
+                attribute_names += ['idx']
+            return s.get_attributes_dict(attribute_names=attribute_names)
+
+        G = nx.DiGraph()
+        if include_attributes:
+            G.add_nodes_from([(n.idx, n.attributes_dict) for n in self.neurons])
+            G.add_edges_from([(s.pre.idx, s.post.idx, get_attributes_dict(s)) for s in self.synapses])
+        else:
+            G.add_nodes_from(range(self.num_neurons))
+            G.add_edges_from(zip(self.pre_synaptic_neuron_ids, self.post_synaptic_neuron_ids))
+        return G
+
+    def to_networkx_accessors(self):
+        """Convert the SNN to a :py:class:`networkx.DiGraph` with accessor Neurons.
+
+        Returns
+        -------
+        networkx.DiGraph
+            The :py:class:`networkx.DiGraph` representation of the SNN.
+
+        See Also
+        --------
+        to_networkx : Create a NetworkX graph suitable for exporting to a file.
+        """
+        import networkx as nx
+
+        G = nx.DiGraph()
+        G.add_nodes_from([n for n in self.neurons])
+        G.add_edges_from([(s.pre, s.post) for s in self.synapses])
+        return G
 
     @property
     def ispikes(self) -> np.ndarray[(int, int), _arr_boollike_T]:
@@ -906,7 +1036,12 @@ class SNN:
             of the neuron after spiking
         refractory_period : int, default=0
             Refractory period of the neuron; the number of time steps for which
-            the neuron remains in a dormant state after spiking
+            the neuron remains in a dormant state after the neuron spikes
+        refractory_state : int, default=0
+            The initial refractory countdown state; the number of time steps until the
+            neuron is allowed to spike again
+        initial_state : float | None, default=0.0
+            The initial charge state of the neuron; the value assigned to the internal state
 
         Returns
         -------
@@ -932,7 +1067,7 @@ class SNN:
 
         leak = float_err(leak, 'leak', fname)
         if not self.allow_signed_leak and leak < 0.0:
-            raise ValueError("leak must be grater than or equal to zero.")
+            raise ValueError("leak must be greater than or equal to zero.")
 
         refractory_period = int_err(refractory_period, 'refractory_period', fname)
         if refractory_period < 0:
@@ -1312,6 +1447,8 @@ class SNN:
     def setup(self, **kwargs):
         """Setup the SNN for simulation.
 
+        In :py:attr:`manual_setup` mode, this function must be called before :py:meth:`simulate()`.
+
         Parameters
         ----------
         dtype : bool | numpy.dtype, default=None
@@ -1319,6 +1456,33 @@ class SNN:
         sparse : bool | str | Any, default=None
             Whether to use a sparse representation for the SNN.
             See :py:attr:`sparse` for more information.
+
+        Notes
+        -----
+        Normally, in automatic setup (:py:attr:`manual_setup` = False), the :py:meth:`recommend()` function will be
+        called to determine the best backend to use. The choice of backend determines the sparsity in this case.
+
+        However, there's a chicken-and-egg problem for automatic backend selection in :py:attr:`manual_setup` mode.
+        SuperNeuroMAT can't know which backend to use until :py:meth:`simulate(time_steps= )` is called.
+        Since :py:meth:`setup()` locks in the sparsity setting, and since that influences which backends can be used,
+        the recommendation may be wrong in :py:attr:`manual_setup` mode.
+
+        We recommend you explicitly set the :py:attr:`backend` and :py:attr:`sparse` parameters to avoid this problem.
+
+        Use a sparse representation when the network size is large, but there are relatively few synapses.
+        Note that ``backend='cpu'`` is the only backend that supports sparse representations.
+        Use the GPU backend when the network size is large and you are simulating for many consecutive time steps.
+
+        See :doc:`/guide/speed` for additional guidance on choosing a backend and sparsity setting manually.
+
+        See Also
+        --------
+        simulate
+        backend
+        sparse
+        manual_setup
+        recommend_sparsity
+        devec
         """
         if not self.manual_setup:
             warnings.warn("setup() called without snn.manual_setup = True. setup() will be called again in simulate().",
@@ -1468,10 +1632,15 @@ class SNN:
             self._spikes = np.zeros(self.num_neurons, self.dbin)
 
     def devec(self):
-        """Copy the internal state variables back to the public-facing canonical representations."""
+        """Copy the internal state variables back to the public-facing canonical representations.
+
+        This is automatically called at the end of :py:meth:`simulate` unless in :py:attr:`manual_setup` mode.
+
+        See :doc:`/guide/speed`.
+        """
         # De-vectorize from numpy arrays to lists
         self.neuron_states: list[float] = self._internal_states.tolist()
-        self.neuron_refractory_periods_state: list[float] = self._neuron_refractory_periods.tolist()
+        self.neuron_refractory_periods_state: list[int] = self._neuron_refractory_periods.tolist()
 
         # Update weights if STDP was enabled
         if self._do_stdp:
@@ -1481,22 +1650,55 @@ class SNN:
                 self.set_weights_from_mat(self._weights)
 
     def zero_neuron_states(self):
+        """Set the internal charge states to zero.
+
+        Sets the :py:attr:`neuron_states` of all neurons in the SNN to ``0.0``
+        by replacing the vector with ``np.zeros(self.num_neurons, self.dd).tolist()``.
+        """
         self.neuron_states = np.zeros(self.num_neurons, self.dd).tolist()
 
     def zero_refractory_periods(self):
+        """Set the refractory period countdowns to zero.
+
+        Sets the :py:attr:`~Neuron.refractory_state` of all neurons in the SNN to ``0``
+        by replacing the :py:attr:`neuron_refractory_periods_state` vector
+        with ``np.zeros(self.num_neurons, self.dd).tolist()``.
+        """
         self.neuron_refractory_periods_state = np.zeros(self.num_neurons, self.dd).tolist()
 
     def reset_neuron_states(self):
+        """Set the internal charge states to the reset values.
+
+        Sets the :py:attr:`~Neuron.state` of all neurons in the SNN
+        to their respective :py:attr:`~Neuron.reset_state`.
+        This is done by replacing the :py:attr:`neuron_states` vector
+        with a copy of :py:attr:`neuron_reset_states`.
+        """
         self.neuron_states = copy.copy(self.neuron_reset_states)
 
-    def reset_refractory_periods(self):
+    def activate_all_refractory_periods(self):
+        """Set the refractory period countdowns to the post-fire state.
+
+        Sets the :py:attr:`~Neuron.refractory_state` of all neurons in the SNN
+        to their respective :py:attr:`~Neuron.refractory_period`.
+        This is done by replacing the :py:attr:`neuron_refractory_periods_state` vector
+        with a copy of :py:attr:`neuron_refractory_periods`.
+        """
         self.neuron_refractory_periods_state = copy.copy(self.neuron_refractory_periods)
 
+    def reset_refractory_periods(self):
+        warnings.warn("reset_refractory_periods() is deprecated. "
+                      "Use the more clearly named activate_all_refractory_periods(), "
+                      "or zero_refractory_periods() to set all refractory periods to zero.",
+                      FutureWarning, stacklevel=2)
+        self.activate_all_refractory_periods()
+
     def clear_spike_train(self):
+        """Deletes recorded history of spikes output by neurons in the SNN."""
         self.spike_train = []
 
     def clear_input_spikes(self, t: int | slice | list | np.ndarray | None = None,
-                           destination: int | Neuron | slice | list | np.ndarray | None = None,
+                           destination: int | Neuron | slice | list | np.ndarray | set | None = None,
                            remove_empty: bool = True):
         """Delete input spikes from the SNN.
 
@@ -1524,7 +1726,7 @@ class SNN:
         # normalize times to delete
         if isinstance(t, slice):
             times_to_delete = set(self.input_spikes.keys()) & set(slice_indices(t, max(self.input_spikes)))
-        elif isinstance(t, int):
+        elif isinstance(t, (int, np.integer)):
             times_to_delete = [t] if t in self.input_spikes else []
         elif t is None:
             times_to_delete = list(self.input_spikes.keys())
@@ -1539,7 +1741,7 @@ class SNN:
                     raise TypeError(msg) from err
 
         # normalize destinations to delete
-        if isinstance(destination, (int, Neuron)):
+        if isinstance(destination, (int, np.integer, Neuron)):
             destination = [int(destination)]
         elif destination is None:
             pass
@@ -1577,22 +1779,39 @@ class SNN:
         .. code-block:: python
 
             snn.reset_neuron_states()
-            snn.reset_refractory_periods()
+            snn.zero_refractory_periods()
             snn.clear_spike_train()
             snn.clear_input_spikes()
+            snn.restore()
 
         .. warning::
 
             This method does not reset the synaptic weights or STDP parameters.
-            Instead, consider copying the parameters you care about so you can assign them later.
+            SuperNeuroMAT also does not automatically store the initial neuron state values, such as
+            the ``initial_state`` and ``refractory_state`` parameters of :py:meth:`create_neuron`.
+            When ``reset()`` is called, if those states are not memoized, each neuron's charge
+            state will be set to its reset state in :py:attr:`neuron_reset_states`,
+            and the refractory countdown in :py:attr:`neuron_refractory_periods_state` will be set to zero.
+
+            If this is not desirable, consider manually copying the parameters you care
+            about so you can assign them later, or using :py:meth:`memoize` to store a snapshot
+            to return to when :py:meth:`restore()` or :py:meth:`reset()` is called, or manually
+            calling only the individual functions that you need (shown above).
 
             See :ref:`reset-snn` for more information.
 
+        See Also
+        --------
+        reset_neuron_states : Reset the charge states of all neurons to their reset values.
+        zero_refractory_periods : Reset the refractory period countdowns to zero.
+        clear_spike_train : Delete all recorded spike trains.
+        clear_input_spikes : Delete all queued input spikes.
+        restore : Restore the model variables to their memoized states.
         """
         if 'neuron_states' not in self.memoized:
             self.reset_neuron_states()
         if 'neuron_refractory_periods_state' not in self.memoized:
-            self.reset_refractory_periods()
+            self.zero_refractory_periods()
         if 'spike_train' not in self.memoized:
             self.clear_spike_train()
         if 'input_spikes' not in self.memoized:
@@ -1600,7 +1819,7 @@ class SNN:
         self.restore()
 
     def restore(self, *args):
-        """Restore model variables to their memoized states.
+        """Restore all or some model variables to their memoized states.
 
         Parameters
         ----------
@@ -1651,7 +1870,12 @@ class SNN:
                 self._input_spikes[t][neuron_id] = amplitude
 
     def consume_input_spikes(self, time_steps: int):
-        """Consumes/deletes input spikes for the given number of time steps."""
+        """Consumes/deletes input spikes for the given number of time steps.
+
+        This is automatically called at the end of :py:meth:`simulate` unless in :py:attr:`manual_setup` mode.
+
+        See :doc:`/guide/speed`.
+        """
         self.input_spikes = {t - time_steps: v for t, v in self.input_spikes.items()
                              if t >= time_steps}
 
@@ -1670,6 +1894,268 @@ class SNN:
         if time_steps is None:
             time_steps = max(bool(self.spike_train), self.stdp_time_steps)
         self.spike_train = self.spike_train[-time_steps:]
+
+    def delete_neuron(self, neuron_id: int | Neuron, reindex: bool = True, _delete_synapses: bool = True):
+        """Deletes a neuron from the network.
+
+        Because neurons and synapses are stored in the SNN as lists of parameters, deleting a neuron may
+        cause shifts in the indices of other neurons and synapses. If you are manually modifying
+        the lists of neuron or synapse parameters, you may find it hard to keep track of what's what.
+
+        However, if you use :py:class:`Neuron`\\ s and :py:class:`Synapse`\\ s, or :py:class:`NeuronListView`\\ s
+        and :py:class:`SynapseListView`\\ s, then the shift in indices will be automatically handled, and those
+        objects will reflect the new indices while still referring to the same neurons and synapses that you'd expect.
+
+        Parameters
+        ----------
+        neuron_id : int or Neuron
+            The ID of the neuron to delete.
+
+        Returns
+        -------
+        tuple[dict, dict]
+            Returns ``(neuron_mapping, synapse_mapping)``, where ``neuron_mapping`` is a mapping
+            of neuron IDs from ``{before: after}`` the neuron was deleted, and ``synapse_mapping`` is a mapping
+            of synaptic IDs from ``{before: after}`` the neuron was deleted.
+        """
+        if isinstance(neuron_id, Neuron):
+            neuron_id = neuron_id.idx
+        if not is_intlike_catch(neuron_id):
+            raise TypeError("neuron_id must be int or Neuron.")
+
+        # TODO: what about delay chains?
+
+        # Delete synapses
+        synaptic_ids = [
+            idx for idx, (pre, post)
+            in enumerate(zip(self.pre_synaptic_neuron_ids, self.post_synaptic_neuron_ids))
+            if pre == neuron_id or post == neuron_id
+        ]
+
+        smap = {}
+        if _delete_synapses:
+            smap = self.delete_synapses(synaptic_ids, reindex=reindex)
+
+        if neuron_id in self._neuron_cache:
+            self._neuron_cache[neuron_id].idx = None
+            del self._neuron_cache[neuron_id]
+
+        if reindex:
+            mapping = {i: i for i in range(neuron_id)}
+            mapping |= {i: i - 1 for i in range(neuron_id + 1, self.num_neurons)}
+
+            # fix broken indices in synapses
+            self.pre_synaptic_neuron_ids = [mapping[i] for i in self.pre_synaptic_neuron_ids if i not in synaptic_ids]
+            self.post_synaptic_neuron_ids = [mapping[i] for i in self.post_synaptic_neuron_ids if i not in synaptic_ids]
+
+            # replace affected indices in neuron lists
+            for nlist in self._neuronlist_cache:
+                indices = set(nlist.indices)
+                overlap = indices & mapping.keys()
+                if overlap:
+                    nlist.indices = [mapping[i] for i in nlist.indices if i != neuron_id and i in mapping]
+            self.rebuild_connection_ids()
+
+            # remap neuron IDs in cache
+            for idx in range(neuron_id + 1, self.num_neurons):
+                if idx in self._neuron_cache:
+                    self._neuron_cache[idx].idx = idx - 1
+                    self._neuron_cache[idx - 1] = self._neuron_cache[idx]
+            del self._neuron_cache[idx]  # delete item in cache with id self.num_neurons - 1 due to left shift in indices
+
+        # self.neurons.remove(self.neurons[neuron_id])
+        del self.neuron_refractory_periods[neuron_id]
+        del self.neuron_refractory_periods_state[neuron_id]
+        del self.neuron_states[neuron_id]
+        del self.neuron_thresholds[neuron_id]
+        del self.neuron_leaks[neuron_id]
+        del self.neuron_reset_states[neuron_id]
+
+        if reindex:
+            return mapping, smap
+        return {}, {}
+
+    def delete_neurons(self, neuron_ids: list[int] | list[Neuron], reindex: bool = True):
+        """Deletes neurons from the network.
+
+        Because neurons and synapses are stored in the SNN as lists of parameters, deleting neurons may
+        cause shifts in the indices of other neurons and synapses. If you are manually modifying
+        the lists of neuron or synapse parameters, you may find it hard to keep track of what's what.
+
+        However, if you use :py:class:`Neuron`\\ s and :py:class:`Synapse`\\ s, or :py:class:`NeuronListView`\\ s
+        and :py:class:`SynapseListView`\\ s, then the shift in indices will be automatically handled, and those
+        objects will reflect the new indices while still referring to the same neurons and synapses that you'd expect.
+
+        Parameters
+        ----------
+        neuron_ids : list[int] | list[Neuron]
+            The IDs of the neurons to delete.
+
+        Returns
+        -------
+        tuple[dict, dict]
+            Returns ``(neuron_mapping, synapse_mapping)``, where ``neuron_mapping`` is a mapping
+            of neuron IDs from ``{before: after}`` the neurons were deleted, and ``synapse_mapping`` is a mapping
+            of synaptic IDs from ``{before: after}`` the neurons were deleted.
+        """
+        indices = set(int(neuron_id) for neuron_id in neuron_ids if isinstance(neuron_id, (int, Neuron)))
+        indices = list(indices)
+        indices.sort(reverse=True)
+        num_neurons = self.num_neurons
+
+        synaptic_ids = [
+            idx for idx, (pre, post)
+            in enumerate(zip(self.pre_synaptic_neuron_ids, self.post_synaptic_neuron_ids))
+            if pre in indices or post in indices
+        ]
+
+        for neuron_id in indices:
+            self.delete_neuron(neuron_id, reindex=False, _delete_synapses=False)
+
+        smap = self.delete_synapses(synaptic_ids, reindex=reindex)
+
+        for idx in indices:
+            if idx in self._neuron_cache:
+                self._neuron_cache[idx].idx = None
+                del self._neuron_cache[idx]
+
+        if not reindex:
+            return {}, {}
+
+        remaining_idxs = (idx for idx in range(num_neurons) if idx not in indices)  # sorted
+        mapping = {old: new for new, old in enumerate(remaining_idxs)}
+
+        for neuron in self._neuron_cache.values():
+            neuron.idx = mapping[neuron.idx]
+        self._neuron_cache = {neuron.idx: neuron for neuron in self._neuron_cache.values()}
+
+        # fix broken indices in synapses
+        self.pre_synaptic_neuron_ids = [mapping[i] for i in self.pre_synaptic_neuron_ids]
+        self.post_synaptic_neuron_ids = [mapping[i] for i in self.post_synaptic_neuron_ids]
+
+        # replace affected indices in neuron lists
+        for nlist in self._neuronlist_cache:
+            indices = set(nlist.indices)
+            overlap = indices & mapping.keys()
+            if overlap:
+                nlist.indices = [mapping[i] for i in nlist.indices if i not in neuron_ids and i in mapping]
+        self.rebuild_connection_ids()
+        return mapping, smap
+
+    def delete_synapse(self, synapse_id: int | Synapse, reindex: bool = True, _rebuild_connection_ids: bool = True):
+        """Deletes a synapse from the network.
+
+        Because synapses are stored in the SNN as a list, deleting a synapse may
+        cause a shift in the indices of other synapses. If you are manually modifying
+        the lists of synapse parameters, you may find it hard to keep track of what's what.
+
+        However, if you use :py:class:`Synapse`\\ s or a :py:class:`SynapseListView`,
+        then the shift in indices will be automatically handled, and those objects will
+        reflect the new indices while still referring to the same synapses that you'd expect.
+
+        .. warning::
+
+            Deleting synapses may result in unexpected behavior, as it can cause
+            large shifts in the indices of synapses. Use with caution.
+
+        Parameters
+        ----------
+        synapse_id : int or Synapse
+            The ID of the synapse to delete.
+
+        Returns
+        -------
+        dict
+            A mapping of synaptic IDs from ``{before: after}`` the synapse was deleted. May be empty.
+        """
+        if isinstance(synapse_id, Synapse):
+            synapse_id = synapse_id.idx
+        if not is_intlike_catch(synapse_id):
+            raise TypeError("synapse_id must be int or Synapse.")
+
+        if synapse_id in self._synapse_cache:
+            self._synapse_cache[synapse_id].idx = None
+            del self._synapse_cache[synapse_id]
+
+        if reindex:
+            mapping = {i: i for i in range(synapse_id)}
+            for syn_id in range(synapse_id, self.num_synapses):
+                mapping[syn_id] = syn_id - 1
+                print(syn_id)
+                if syn_id in self._synapse_cache:
+                    print(syn_id, ' in cache')
+                    self._synapse_cache[syn_id].idx = syn_id - 1
+                    self._synapse_cache[syn_id - 1] = self._synapse_cache[syn_id]
+            del mapping[synapse_id]
+            del self._synapse_cache[syn_id]  # delete the last cached synapse after the shift
+
+        pair = (self.pre_synaptic_neuron_ids[synapse_id], self.post_synaptic_neuron_ids[synapse_id])
+        if pair in self.connection_ids:
+            del self.connection_ids[pair]
+        del self.pre_synaptic_neuron_ids[synapse_id]
+        del self.post_synaptic_neuron_ids[synapse_id]
+        del self.synaptic_weights[synapse_id]
+        del self.synaptic_delays[synapse_id]
+        del self.enable_stdp[synapse_id]
+        if reindex:
+            for slist in self._synapselist_cache:
+                indices = set(slist.indices)
+                overlap = indices & mapping.keys()
+                if overlap:
+                    slist.indices = [mapping[i] for i in slist.indices if i != synapse_id and i in mapping]
+            if _rebuild_connection_ids:
+                self.rebuild_connection_ids()
+            return mapping
+        return {}
+
+    def delete_synapses(self, synapse_ids: Sequence[int] | Sequence[Synapse], reindex: bool = True, _rebuild_connection_ids: bool = True):
+        """Deletes a list of synapses from the network.
+
+        Because synapses are stored in the SNN as a list, deleting synapses may
+        cause a shift in the indices of other synapses. If you are manually modifying
+        the lists of synapse parameters, you may find it hard to keep track of what's what.
+
+        However, if you use :py:class:`Synapse`\\ s or a :py:class:`SynapseListView`,
+        then the shift in indices will be automatically handled, and those objects will
+        reflect the new indices while still referring to the same synapses that you'd expect.
+
+        .. warning::
+
+            Deleting synapses may result in unexpected behavior, as it can cause
+            large shifts in the indices of synapses. Use with caution.
+
+        Parameters
+        ----------
+        synapse_ids : list[int] | list[Synapse]
+            The IDs of the synapses to delete.
+        """
+        indices = set(int(synapse_id) for synapse_id in synapse_ids if isinstance(synapse_id, (int, Synapse)))
+        indices = list(indices)
+        indices.sort(reverse=True)
+        num_synapses = self.num_synapses
+        for synapse_id in indices:
+            self.delete_synapse(synapse_id, reindex=False)
+        if not reindex:
+            return {}
+
+        remaining_idxs = (idx for idx in range(num_synapses) if idx not in indices)  # sorted
+        mapping = {old: new for new, old in enumerate(remaining_idxs)}
+
+        for synapse in self._synapse_cache.values():
+            synapse.idx = mapping[synapse.idx]
+        self._synapse_cache = {synapse.idx: synapse for synapse in self._synapse_cache.values()}
+
+        if _rebuild_connection_ids:
+            self.rebuild_connection_ids()
+
+        for slist in self._synapselist_cache:
+            indices = set(slist.indices)
+            overlap = indices & mapping.keys()
+            if not overlap:
+                continue
+            slist.indices = [mapping[i] for i in slist.indices if i in mapping]
+
+        return mapping
 
     _internal_vars = [
         "_neuron_thresholds", "_neuron_leaks", "_neuron_reset_states", "_internal_states",
@@ -1704,7 +2190,16 @@ class SNN:
         self._is_sparse = False
 
     def recommend(self, time_steps: int):
-        """Recommend a backend to use based on network size and continuous sim time steps."""
+        """Recommend a backend to use based on network size and continuous sim time steps.
+
+        See :py:meth:`setup` and :doc:`/guide/speed` for guidance on choosing a backend and sparsity setting manually.
+
+        See Also
+        --------
+        recommend_sparsity
+        setup
+        simulate
+        """
         score = self.num_neurons ** 2 * time_steps / 1e6
 
         if self.gpu and score > self.gpu_threshold and self.weight_sparsity() > 0.0005:
@@ -1714,10 +2209,22 @@ class SNN:
         return 'cpu'
 
     def recommend_sparsity(self):
-        return self.weight_sparsity() < self.sparsity_threshold and self.num_neurons > 100
+        """Recommend whether to use sparse representation to use based on network size.
+
+        See :py:meth:`setup` and :doc:`/guide/speed` for guidance on choosing a backend and sparsity setting manually.
+
+        See Also
+        --------
+        recommend
+        setup
+        sparse
+        """
+        return self.num_neurons > 100 and self.weight_sparsity() < self.sparsity_threshold
 
     def simulate(self, time_steps: int = 1, callback=None, use=None, sparse=None, **kwargs) -> None:
         """Simulate the neuromorphic spiking neural network
+
+        See :py:meth:`setup` and :doc:`/guide/speed` for guidance on choosing a backend and sparsity setting manually.
 
         Parameters
         ----------
@@ -1729,6 +2236,12 @@ class SNN:
             Which backend to use. Can be 'auto', 'cpu', 'jit', or 'gpu'.
             If None, SNN.backend will be used, which is 'auto' by default.
             'auto' will choose a backend based on the network size and time steps.
+        sparse : bool | str | Any, default=None
+            Whether to use a sparse representation for the SNN.
+            See :py:attr:`sparse` for more information.
+            This must be set to ``None`` if in :py:attr:`manual_setup` mode.
+        **kwargs : Any
+            Additional keyword arguments to pass to the underlying setup functions.
 
         Raises
         ------
@@ -1736,6 +2249,23 @@ class SNN:
             If ``time_steps`` is not an int.
         ValueError
             If ``time_steps`` is less than or equal to zero.
+
+        See Also
+        --------
+        setup
+        recommend
+        recommend_sparsity
+        simulate_cpu
+        simulate_cpu_jit
+        simulate_gpu
+        devec
+        consume_input_spikes
+
+        Notes
+        -----
+        The backend recommendation in :py:attr:`manual_setup` mode may be different
+        because the backend depends on whether the SNN is :py:attr:`sparse` or not,
+        and the sparsity setting must be set in :py:meth:`setup` BEFORE calling ``simulate()``.
         """
 
         # Type errors
@@ -1773,10 +2303,14 @@ class SNN:
 
             self._setup(sparse=sparse)
             self.setup_input_spikes(time_steps)
-        elif sparse is not None:
-            msg = "simulate() received sparsity argument in manual_setup mode."
-            msg += " Pass sparse to setup() instead."
-            raise ValueError(msg)
+        else:
+            if sparse is not None:
+                msg = "simulate() received sparsity argument in manual_setup mode."
+                msg += " Pass sparse to setup(sparse= ) instead."
+                raise ValueError(msg)
+            if use == 'auto':
+                use = 'cpu' if self._is_sparse else self.recommend(time_steps)
+                use = 'cpu' if use == 'gpu' else use
 
         if not use:
             use = 'cpu'
@@ -2236,6 +2770,33 @@ class SNN:
         del self.memoized
         self.memoized = {}
 
+    @staticmethod
+    def is_numeric_array(o):
+        is_np = isinstance(o, np.ndarray) and o.dtype.kind in 'iuf'
+        is_py = isinstance(o, (tuple, list)) and all([isinstance(x, (int, float, bool)) for x in o])
+        return is_np or is_py
+
+    @staticmethod
+    def is_bool_array(o):
+        if isinstance(o, np.ndarray):
+            try:
+                return np.issubdtype(o.dtype, np.bool)
+            except AttributeError:
+                return issubclass(o.dtype.type, np.bool_)
+        else:
+            return all([isinstance(x, bool) for x in o])
+
+    @classmethod
+    def _json_default(cls, o):
+        if isinstance(o, np.ndarray):
+            if cls.is_bool_array(o):
+                return o.astype(np.int_).tolist()
+            return o.tolist()
+        if issubclass(o, np.generic):
+            return o.__name__
+        msg = f'Object of type {o.__class__.__name__} is not JSON serializable'
+        raise TypeError(msg)
+
     def _to_json_dict(self, array_representation="json-native",
                       skipkeys: list[str] | tuple[str] | set[str] | None = None,
                       net_name=None, extra=None):
@@ -2268,30 +2829,6 @@ class SNN:
         varnames = set(self.eqvars) - skipkeys
         arep = array_representation
 
-        def is_numeric_array(o):
-            is_np = isinstance(o, np.ndarray) and o.dtype.kind in 'iuf'
-            is_py = isinstance(o, (tuple, list)) and all([isinstance(x, (int, float, bool)) for x in o])
-            return is_np or is_py
-
-        def is_bool_array(o):
-            if isinstance(o, np.ndarray):
-                try:
-                    return np.issubdtype(o.dtype, np.bool)
-                except AttributeError:
-                    return issubclass(o.dtype.type, np.bool_)
-            else:
-                return all([isinstance(x, bool) for x in o])
-
-        def default(self, o):
-            if isinstance(o, np.ndarray):
-                if is_bool_array(o):
-                    return o.astype(np.int_).tolist()
-                return o.tolist()
-            if issubclass(o, np.generic):
-                return o.__name__
-            msg = f'Object of type {o.__class__.__name__} is not JSON serializable'
-            raise TypeError(msg)
-
         def get_dtype(o):
             byteorder = o.dtype.byteorder
             if byteorder == '=':
@@ -2310,15 +2847,15 @@ class SNN:
             data = {var: getattr(self, var) for var in varnames}
 
             for k, v in data.items():
-                if is_numeric_array(v) and is_bool_array(v):
+                if self.is_numeric_array(v) and self.is_bool_array(v):
                     data[k] = np.asarray(v, dtype=np.int_).tolist()
         elif arep in ["base85", "base64"]:
             from base64 import b85encode, b64encode
             encode = b85encode if arep == "base85" else b64encode
             data = {var: getattr(self, var) for var in varnames}
             for k, v in data.items():
-                if is_numeric_array(v):
-                    dtype = self.dbin if is_bool_array(v) else self.dd
+                if self.is_numeric_array(v):
+                    dtype = self.dbin if self.is_bool_array(v) else self.dd
                     arr = np.asarray(v, dtype=dtype)
                     data[k] = {
                         "dtype": get_dtype(arr),
@@ -2327,8 +2864,6 @@ class SNN:
                     }
         else:
             raise ValueError("array_representation must be 'json-native' or 'base85'.")
-
-        json.JSONEncoder.default = default
 
         d = {
             "$schema": "https://ornl.github.io/superneuromat/schema/0.1/snn.json",
@@ -2392,8 +2927,9 @@ class SNN:
         >>> snn.to_json(net_name="My SNN", indent=None)
         {"$schema": "https://ornl.github.io/superneuromat/schema/0.1/snn.json", "version": "0.1", "networks": [{"meta": {"array_representation": "json-native", "from": {"module": "superneuromat", "version": "3.1.0"}, "format": "snm", "format_version": "0.1", "type": "SNN"}, "data": {"neuron_refractory_periods": [0, 0], "neuron_states": [0.0, 0.0], "num_synapses": 2, "post_synaptic_neuron_ids": [1, 0], "aneg": [], "enable_stdp": [0, 0], "pre_synaptic_neuron_ids": [0, 1], "neuron_thresholds": [3.141592653589793115997963468544185161590576171875, 0.0], "neuron_refractory_periods_state": [0.0, 0.0], "neuron_reset_states": [0.0, 0.0], "stdp_positive_update": true, "input_spikes": {"3": {"nids": [1], "values": [1.0]}}, "synaptic_delays": [1, 1], "allow_signed_leak": false, "num_neurons": 2, "_sparse": "auto", "_backend": "auto", "apos": [], "manual_setup": false, "spike_train": [[1, 0], [0, 1], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0]], "neuron_leaks": [Infinity, Infinity], "allow_incorrect_stdp_sign": false, "stdp": true, "synaptic_weights": [1.0, 1.0], "default_dtype": "float64", "stdp_negative_update": true}}]}
         """  # noqa: E501 (line length)
+
         d = self._to_json_dict(array_representation, skipkeys=skipkeys, net_name=net_name, extra=extra)
-        return json.dumps(d, indent=indent, **kwargs)
+        return json.dumps(d, indent=indent, default=self._json_default, **kwargs)
 
     def saveas_json(self, fp,
                     array_representation="json-native",
@@ -2429,7 +2965,7 @@ class SNN:
         >>>     snn.saveas_json(f, net_name="My SNN")
         """
         d = self._to_json_dict(array_representation, skipkeys=skipkeys, net_name=net_name, extra=extra)
-        return json.dump(d, fp, indent=indent, **kwargs)
+        return json.dump(d, fp, indent=indent, default=self._json_default, **kwargs)
 
     def from_json_network(self, net_dict: dict, skipkeys: list[str] | tuple[str] | set[str] | None = None):
         from base64 import b85decode, b64decode

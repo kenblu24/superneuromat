@@ -65,37 +65,49 @@
 
    These attributes are not intended to be modified directly by end users.
 
-   :type neuron_thresholds: list
+   :type neuron_states: list[float]
+   :param neuron_states:
+      List of neuron states (charge or membrane potential)
+   :type neuron_thresholds: list[float]
    :param neuron_thresholds:
       List of neuron thresholds
-   :type neuron_leaks: list
+   :type neuron_leaks: list[float]
    :param neuron_leaks:
       List of neuron leaks
       defined as the amount by which the internal states of the neurons are pushed towards the neurons' reset states
-   :type neuron_reset_states: list
+   :type neuron_reset_states: list[float]
    :param neuron_reset_states:
-      List of neuron reset states
-   :type neuron_refractory_periods: list
+      List of neuron reset states.
+      This is the state of the neuron immediately after spiking.
+   :type neuron_refractory_periods: list[int]
    :param neuron_refractory_periods:
-      List of neuron refractory periods
-   :type pre_synaptic_neuron_ids: list
+      List of neuron refractory periods.
+      This is the number of time steps during which the neuron is in its refractory period.
+      When the neuron spikes, the ``neuron_refractory_periods_state`` is set to its value from ``neuron_refractory_periods``.
+   :type neuron_refractory_periods_state: list[int]
+   :param neuron_refractory_periods_state:
+      List of neuron refractory periods states
+      This is the countdown until the neuron is allowed to spike again.
+   :type pre_synaptic_neuron_ids: list[int]
    :param pre_synaptic_neuron_ids:
       List of pre-synaptic neuron IDs
-   :type post_synaptic_neuron_ids: list
+   :type post_synaptic_neuron_ids: list[int]
    :param post_synaptic_neuron_ids:
       List of post-synaptic neuron IDs
-   :type synaptic_weights: list
+   :type synaptic_weights: list[float]
    :param synaptic_weights:
       List of synaptic weights
-   :type synaptic_delays: list
+   :type synaptic_delays: list[int]
    :param synaptic_delays:
       List of synaptic delays
-   :type enable_stdp: list
+      Note that delay chain neurons are signified by a negative value on the final synapse in the chain.
+   :type enable_stdp: list[bool]
    :param enable_stdp:
       List of Boolean values denoting whether STDP learning is enabled on each synapse
-   :type input_spikes: dict
+   :type input_spikes: dict[int, dict[str, list]]
    :param input_spikes:
       Dictionary of input spikes for each time step.
+      Indexed by ``time`` first, then a DoK-like sparse array of ``'nids'`` and ``'values'``.
 
 
 
@@ -143,6 +155,10 @@ Methods
    ~SNN.stdp_setup
    ~SNN.set_stdp_enabled_from_mat
    ~SNN.set_weights_from_mat
+   ~SNN.delete_neuron
+   ~SNN.delete_neurons
+   ~SNN.delete_synapse
+   ~SNN.delete_synapses
 
 
 .. _inspecting-the-snn:
@@ -159,6 +175,7 @@ Methods
    ~SNN.get_synapse_df
    ~SNN.get_synapses_by_post
    ~SNN.get_synapses_by_pre
+   ~SNN.get_synapse_id
    ~SNN.get_synaptic_id
    ~SNN.get_synaptic_ids_by_post
    ~SNN.get_synaptic_ids_by_pre
@@ -200,7 +217,9 @@ Methods
    ~SNN.release_mem
    ~SNN.reset
    ~SNN.reset_neuron_states
-   ~SNN.reset_refractory_periods
+   ~SNN.activate_all_refractory_periods
+   ~SNN.zero_neuron_states
+   ~SNN.zero_refractory_periods
    ~SNN.restore
    ~SNN.setup
    ~SNN.setup_input_spikes
@@ -209,12 +228,12 @@ Methods
    ~SNN.simulate_cpu_jit
    ~SNN.simulate_gpu
    ~SNN.unmemoize
-   ~SNN.zero_neuron_states
-   ~SNN.zero_refractory_periods
    ~SNN.rebuild_connection_ids
    ~SNN.to_json
    ~SNN.saveas_json
    ~SNN.from_jsons
+   ~SNN.to_networkx
+   ~SNN.to_networkx_accessors
 
 
 Attributes
@@ -235,6 +254,7 @@ Attributes
    ~SNN.is_sparse
    ~SNN.sparse
    ~SNN.stdp_time_steps
+   ~SNN.manual_setup
 
    .. ~SNN.dbin
    .. ~SNN.dd
