@@ -15,6 +15,7 @@ class CaspianImporter:
         self.synapses = SynapseListView(self.snn, [])
         self.j = {}
         self.keep_neuron_ids = True
+        self.use_chained_delay = False
         self.max_neurons = None
         self.node_propmap = {}
         self.edge_propmap = {}
@@ -46,6 +47,7 @@ class CaspianImporter:
             self.node_id_map[edge['to']],
             weight=props[emap["Weight"]],
             delay=props[emap["Delay"]],
+            use_chained_delay=self.use_chained_delay,
         )
 
     @staticmethod
