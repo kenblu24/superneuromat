@@ -65,7 +65,7 @@ class CaspianImporter:
         j_nodes = sorted(j['Nodes'], key=lambda v: v['id'])
         nodes = [(n['id'], n['values']) for n in j_nodes]
         if self.keep_neuron_ids:
-            highest_id = max(nodes, key=lambda v: v[0])
+            highest_id, _params = max(nodes, key=lambda v: v[0])
             for _i in range(highest_id + 1):
                 self.snn.create_neuron()
             self.set_neuron_props(nodes)
