@@ -79,6 +79,12 @@ class CaspianImporter:
 
         return self.snn
 
+    def network_from_json_file(self, filename: str) -> tuple[dict[int, Node], list[Node], list[Node]]:
+        import json
+        with open(filename) as f:
+            j = json.load(f)
+        return self.network_from_json(j)
+
 
 class CaspianExporter:
     def __init__(self, snn: SNN):
