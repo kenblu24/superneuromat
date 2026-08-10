@@ -89,6 +89,4 @@ class CaspianExporter:
         self.node_propmap = {}
         self.edge_propmap = {}
         self.node_id_map = {}  # map node IDs to SNN neuron IDs
-        self.remove_
-
-    def
+        # self.remove_
